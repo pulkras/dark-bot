@@ -2,16 +2,53 @@ import telebot
 import config 
 from telebot import types
 import time
+from telethon import TelegramClient, events
+from mysql.connector import Error
 
 bot = telebot.TeleBot(config.TOKEN)
+client = TelegramClient('daerkmem_bot', config.API_ID, config.API_HASH)
 
-CHAT_ID = "@IhtDEuLaKpZlZDky"  # ID вашего чата
-CHANNEL_ID = "@darkmemtoken"  # ID вашего канала
+CHAT_ID = bot.get_chat("@IhtDEuLaKpZlZDky").id  # ID вашего чата
+CHANNEL_ID = bot.get_chat("@darkmemtoken").id  # ID вашего канала
+channel_name = 'darkmemtoken'
 balance = None
 approved = False
 global language
 language = "RU"
 
+
+# Подключение к базе данных MySQL
+def create_db_connection():
+    try:
+        connection = mysql.connector.connect(
+            host='localhost',
+            database='dark',
+            user='botuser',
+            password=config.PASSWORD
+        )
+        if connection.is_connected():
+            print("Соединение с базой данных установлено")
+            return connection
+    except Error as e:
+        print(f"Ошибка подключения к базе данных: {e}")
+        return None
+
+# Добавление или обновление пользователя и его баллов
+def update_user_points(username, points):
+    connection = create_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        if cursor.fetchone() is None:
+            cursor.execute("INSERT INTO users (username, points) VALUES (%s, %s)", (username, points))
+        else:
+            cursor.execute("UPDATE users SET points = points + %s WHERE username = %s", (points, username))
+        connection.commit()
+    except Error as e:
+        print(f"Ошибка работы с таблицей пользователей: {e}")
+    finally:
+        cursor.close()
+        connection.close()
 
 def is_approved(message):
     if language == "RU":
@@ -130,9 +167,15 @@ def enter_refferal(message):
 
 @bot.message_handler(commands=['start'])
 def welcome(message):
-    # if not approved:
-    #     choose_lang(message)
-    # else:
+    if not approved:
+        choose_lang(message)
+
+        if "IhtDEuLaKpZlZDky" in message.chat.invite_link:
+            print("Chat ID:", message.chat.id)
+            bot.send_message(message.chat.id, f"Chat ID: {message.chat.id}")
+        else:
+            bot.send_message(message.chat.id, "Это не тот чат.")
+    else:
         is_approved(message)
 
 @bot.message_handler(content_types=['text'])
@@ -151,31 +194,30 @@ def answer(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "approval")
 def check_subscription(call):
-    # user_id = call.from_user.id
+    user_id = call.from_user.id
 
-    # # Проверка подписки на чат
-    # chat_member = bot.get_chat_member(CHAT_ID, user_id)
-    # channel_member = bot.get_chat_member(CHANNEL_ID, user_id)
+    try:
+        # Проверка подписки на чат
+        chat_member = bot.get_chat_member(CHAT_ID, user_id)
+        channel_member = bot.get_chat_member(CHANNEL_ID, user_id)
 
-    # if chat_member.status in ['member', 'administrator', 'creator'] and channel_member.status in ['member', 'administrator', 'creator']:
-    #     global approved
-    #     approved = True
-    #     if language == "RU":
-    #     # Пользователь подписан и на чат, и на канал
-    #         bot.answer_callback_query(call.id, "Проверка пройдена!")
-    #         bot.send_message(call.message.chat.id, "Вы подписаны на оба ресурса. Проверка пройдена.")
-    #     elif language == "EN":
-    #         bot.answer_callback_query(call.id, "Approved!")
-    #         bot.send_message(call.message.chat.id, "Checking is approved")
-    # else:
-    #     if language == "RU":
-    #     # Пользователь не подписан на один или оба ресурса
-    #         bot.answer_callback_query(call.id, "Вы не подписаны!")
-    #         bot.send_message(call.message.chat.id, "Вы не подписаны на чат или канал.")
-    #     elif language == "EN":
-    #         bot.answer_callback_query(call.id, "Didn't subscribe!")
-    #         bot.send_message(call.message.chat.id, "You didn't subscribe chat or channel")
-    is_approved(call.message)
+        if chat_member.status in ['участник', 'member', 'administrator', 'creator'] and channel_member.status in ['участник', 'member', 'administrator', 'creator']:
+            global approved
+            approved = True
+            if language == "RU":
+            # Пользователь подписан и на чат, и на канал
+                bot.send_message(call.message.chat.id, "Вы подписаны на оба ресурса. Проверка пройдена.")
+            elif language == "EN":
+                bot.send_message(call.message.chat.id, "Checking is approved")
+        else:
+            if language == "RU":
+            # Пользователь не подписан на один или оба ресурса
+                bot.send_message(call.message.chat.id, "Вы не подписаны на чат или канал.")
+            elif language == "EN":
+                bot.send_message(call.message.chat.id, "You didn't subscribe chat or channel")
+        # is_approved(call.message)
+    except telebot.apihelper.ApiTelegramException as e:
+        print(f"Ошибка API Telegram: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "nft")
 def check_nft_ref(call):
@@ -184,4 +226,20 @@ def check_nft_ref(call):
     elif language == "EN":
         bot.send_message(call.message.chat.id, "🙁At the moment you don’t have enough referrals to receive a unique NFT.\n\nTo receive a personalized NFT, you must invite 5+ referrals through your invite link.")
 
+
+# Обработчик событий добавления реакции
+@client.on(events.ChatAction)
+async def handle_reaction(event):
+    if event.chat.username == channel_name:
+        if event.user_added or event.user_joined:
+            user = await event.get_user()
+            username = user.username or f"{user.id}"  # Используем ID, если username отсутствует
+
+            # Если пользователь поставил реакцию, начисляем 4 балла
+            if event.action_message.reactions:
+                update_user_points(username, 4)
+                print(f"{username} получил {4} баллов за реакцию.")
+
+client.start()
+client.run_until_disconnected()
 bot.polling(none_stop=True)
