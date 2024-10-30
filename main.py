@@ -4,11 +4,14 @@ from telebot import types
 import time
 from telethon import TelegramClient, events
 from mysql.connector import Error
+import threading
+
+from admin import admin_panel, callback_handler, add_promo_code, delete_promo_code
 
 bot = telebot.TeleBot(config.TOKEN)
 client = TelegramClient('daerkmem_bot', config.API_ID, config.API_HASH)
 
-CHAT_ID = bot.get_chat("@IhtDEuLaKpZlZDky").id  # ID вашего чата
+CHAT_ID = '-1002258778202'  # ID вашего чата
 CHANNEL_ID = bot.get_chat("@darkmemtoken").id  # ID вашего канала
 channel_name = 'darkmemtoken'
 balance = None
@@ -33,6 +36,22 @@ def create_db_connection():
         print(f"Ошибка подключения к базе данных: {e}")
         return None
 
+@bot.message_handler(commands=['admin'])
+def admin_command(message):
+    admin_panel(message)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    callback_handler(call)
+
+@bot.message_handler(func=lambda message: message.text == "Добавить промокод")
+def add_promo(message):
+    add_promo_code(message)
+
+@bot.message_handler(func=lambda message: message.text == "Удалить промокод")
+def delete_promo(message):
+    delete_promo_code(message)
+
 # Добавление или обновление пользователя и его баллов
 def update_user_points(username, points):
     connection = create_db_connection()
@@ -50,6 +69,7 @@ def update_user_points(username, points):
         cursor.close()
         connection.close()
 
+
 def is_approved(message):
     if language == "RU":
         first_markup = types.InlineKeyboardMarkup(row_width=2)
@@ -62,8 +82,9 @@ def is_approved(message):
         referal = types.KeyboardButton("Реф.")
         lang = types.KeyboardButton("Язык")
         promo = types.KeyboardButton("Промокод")
+        admin = types.KeyboardButton("Админка")
 
-        second_markup.add(wallet, referal, lang, promo)
+        second_markup.add(wallet, referal, lang, promo, admin)
         bot.send_message(message.chat.id, "...", reply_markup=second_markup)
         bot.send_photo(message.chat.id, open('images/dark_welcome.jpg', 'rb'), caption="Привет!\n\nДобро пожаловать в официального бота $DARK! 🎉Здесь вы можете получать монеты $DARK за свою активность. Все просто: реагируйте на посты и подписывайтесь на наш канал Dark, чтобы получать вознаграждения. Чем больше активности — тем больше монет $DARK у вас на счету. 🚀\n\nНачнем?", parse_mode="html", reply_markup=first_markup)
     elif language == "EN":
@@ -77,8 +98,9 @@ def is_approved(message):
         referal = types.KeyboardButton("REF")
         lang = types.KeyboardButton("LANG")
         promo = types.KeyboardButton("PromoCode")
+        admin = types.KeyboardButton("Admin")
 
-        second_markup.add(wallet, referal, lang, promo)
+        second_markup.add(wallet, referal, lang, promo, admin)
         bot.send_message(message.chat.id, "...", reply_markup=second_markup)
         bot.send_photo(message.chat.id, open('images/dark_welcome.jpg', 'rb'), caption="Hi!\n\nWelcome to the official $DARK bot! 🎉Here you can get $DARK coins for your activity. It's simple: react to posts and subscribe to our Dark channel to get rewards. The more activity - the more $DARK coins you have in your account. 🚀 \n\nShall we get started?", parse_mode="html", reply_markup=first_markup)
 
@@ -92,7 +114,8 @@ def choose_lang(message):
         bot.send_message(message.chat.id, "Please specify language:", parse_mode="html", reply_markup=markup)
 
 def subscriptions(message):
-        if message.text == "RU":
+    if  not approved:
+        if message.text == "RU"
             global language
             language = "RU"
             markup = types.InlineKeyboardMarkup(row_width=2)
@@ -113,6 +136,8 @@ def subscriptions(message):
             markup.add(our_chat, our_channel, approval)
 
             bot.send_message(message.chat.id, "Subscribe to our chat and channel before using bot :)", parse_mode="html", reply_markup=markup)
+    else:
+        is_approved()
 
 def wallet(message):
     if message.text == "Кошелек" or message.text == "Wallet":
@@ -142,39 +167,105 @@ def wallet(message):
             bot.send_message(message.chat.id, "...", reply_markup=second_markup)
             bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption="💸 Your balance: DARK " + str(balance) + "\n\nYour wallet:\n\n👨‍👨‍👦‍👦Invite friends to earn more")
 
-def enter_promocode(message):
-    if message.text == "Промокод" or message.text == "PromoCode":
-        if language == "RU":
-            bot.send_photo(message.chat.id, open('images/dark_special_offer.jpg', 'rb'), caption="Введите промокод:")
-        elif language == "EN":
-            bot.send_photo(message.chat.id, open('images/dark_special_offer.jpg', 'rb'), caption="Enter promo code:")
+# Обработчик нажатия на кнопку "Промокод" (или "PromoCode")
+@bot.message_handler(func=lambda message: message.text in ["Промокод", "PromoCode"])
+def prompt_for_code(message):
+    if language == "RU":
+        msg = bot.send_message(message.chat.id, "Введите промокод:")
+    else:
+        msg = bot.send_message(message.chat.id, "Enter promo code:")
+    bot.register_next_step_handler(msg, validate_promocode)
+
+# Функция для проверки валидности промокода
+def validate_promocode(message):
+    promo_code = message.text.strip()
+    connection = create_db_connection()
+    cursor = connection.cursor()
+    
+    try:
+        cursor.execute("SELECT points FROM promo_codes WHERE code = %s", (promo_code,))
+        result = cursor.fetchone()
+        
+        if result:
+            points = result[0]
+            update_user_points(message.from_user.username, points)
+            if language == "RU":
+                bot.send_message(message.chat.id, f"Промокод успешно применен! Вам начислено {points} баллов.")
+            else:
+                bot.send_message(message.chat.id, f"The promo code has been successfully applied! You have been credited with {points} points.")
+        else:
+            if language == "RU":
+                bot.send_message(message.chat.id, "Неверный промокод. Попробуйте еще раз.")
+            else:
+                bot.send_message(message.chat.id, "Invalid promo code. Please try again.")
+    except Error as e:
+        print(f"Ошибка при проверке промокода: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+def generate_referral_link(user_id):
+    return f"https://t.me/ThisDarkBot?start=ref_{user_id}"
 
 def enter_refferal(message):
+    user_id = message.from_user.id
+    referral_link = generate_referral_link(user_id)
+    
     if message.text == "Реф." or message.text == "REF":
-        refferals = 0
+        refferals = get_user_referrals_count(user_id)  # Получение количества рефералов из БД
         if language == "RU":
             markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
             back = types.KeyboardButton("Назад")
-    
             markup.add(back)
-            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption="Ваш баланс:  DARK " + str(balance) + "\n\n1 реф. = 20 $DARK\n\nПригласить больше друзей 👇🏼\n\n🎖 У вас рефералов: " + str(refferals) + " чел.\n\n🛎 Ваша ссылка: https://", parse_mode="html", reply_markup=markup)
+            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption=f"Ваш баланс: DARK {balance}\n\n1 реф. = 20 $DARK\n\nПригласить больше друзей 👇🏼\n\n🎖 У вас рефералов: {refferals} чел.\n\n🛎 Ваша ссылка: {referral_link}", parse_mode="html", reply_markup=markup)
         elif language == "EN":
             markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
             back = types.KeyboardButton("Back")
-    
             markup.add(back)
-            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption="Your balance: DARK " + str(balance) + "\n\n1ref. = 20 $DARK\n\nInvite more friends \n\n🎖 Your referrals: " + str(refferals) + " people.\n\n🛎 Your referrer: https://", parse_mode="html", reply_markup=markup)
+            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption=f"Your balance: DARK {balance}\n\n1 ref. = 20 $DARK\n\nInvite more friends \n\n🎖 Your referrals: {refferals} people.\n\n🛎 Your link: {referral_link}", parse_mode="html", reply_markup=markup)
+
+def add_points_to_referrer(referrer_id, points):
+    connection = create_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE users SET points = points + %s WHERE id = %s", (points, referrer_id))
+        connection.commit()
+    except Error as e:
+        print(f"Ошибка при добавлении баллов рефереру: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+def update_referral_count(referrer_id):
+    connection = create_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE id = %s", (referrer_id,))
+        connection.commit()
+    except Error as e:
+        print(f"Ошибка при обновлении количества рефералов: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
 
 @bot.message_handler(commands=['start'])
 def welcome(message):
     if not approved:
-        choose_lang(message)
+        user_id = message.from_user.id
+        if message.text.startswith('/start ref_'):
+            referrer_id = int(message.text.split('_')[1])
 
-        if "IhtDEuLaKpZlZDky" in message.chat.invite_link:
-            print("Chat ID:", message.chat.id)
-            bot.send_message(message.chat.id, f"Chat ID: {message.chat.id}")
-        else:
-            bot.send_message(message.chat.id, "Это не тот чат.")
+            # Добавление баллов за приглашенного реферала
+            if referrer_id != user_id:
+                add_points_to_referrer(referrer_id, 4)  # Функция добавления 4 баллов рефереру
+
+                # Обновление данных о рефералах
+                update_referral_count(referrer_id)  # Увеличение счётчика рефералов для реферера
+
+                # Уведомление реферера о новом приглашенном
+                bot.send_message(referrer_id, "Ваш реферал успешно зарегистрировался! Вам начислено 4 балла.")
+        choose_lang(message)
     else:
         is_approved(message)
 
@@ -183,7 +274,6 @@ def answer(message):
     if message.chat.type == 'private':
         subscriptions(message)
         wallet(message)
-        enter_promocode(message)
         enter_refferal(message)
 
         if message.text == "Язык" or message.text == "LANG":
@@ -228,18 +318,34 @@ def check_nft_ref(call):
 
 
 # Обработчик событий добавления реакции
-@client.on(events.ChatAction)
-async def handle_reaction(event):
-    if event.chat.username == channel_name:
-        if event.user_added or event.user_joined:
-            user = await event.get_user()
-            username = user.username or f"{user.id}"  # Используем ID, если username отсутствует
+# @client.on(events.ChatAction)
+# async def handle_reaction(event):
+#     if event.chat.username == channel_name:
+#         if event.user_added or event.user_joined:
+#             user = await event.get_user()
+#             username = user.username or f"{user.id}"  # Используем ID, если username отсутствует
 
-            # Если пользователь поставил реакцию, начисляем 4 балла
-            if event.action_message.reactions:
-                update_user_points(username, 4)
-                print(f"{username} получил {4} баллов за реакцию.")
+#             # Если пользователь поставил реакцию, начисляем 4 балла
+#             if event.action_message.reactions:
+#                 update_user_points(username, 4)
+#                 print(f"{username} получил {4} баллов за реакцию.")
 
-client.start()
-client.run_until_disconnected()
-bot.polling(none_stop=True)
+def start_telethon_client():
+    client.start()
+    client.run_until_disconnected()
+
+# Запуск TeleBot клиента
+def start_telebot_client():
+    bot.polling(none_stop=True)
+
+# Создаем потоки для обоих клиентов
+telethon_thread = threading.Thread(target=start_telethon_client)
+telebot_thread = threading.Thread(target=start_telebot_client)
+
+# Запускаем оба потока
+telethon_thread.start()
+telebot_thread.start()
+
+# Ждем завершения обоих потоков
+telethon_thread.join()
+telebot_thread.join()
