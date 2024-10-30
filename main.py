@@ -3,15 +3,16 @@ import config
 from telebot import types
 import time
 from telethon import TelegramClient, events
+import mysql.connector
 from mysql.connector import Error
 import threading
 
-from admin import admin_panel, callback_handler, add_promo_code, delete_promo_code
+from admin import admin_panel, callback_handler, add_promo_code, delete_promo_code, view_promocodes
 
 bot = telebot.TeleBot(config.TOKEN)
-client = TelegramClient('daerkmem_bot', config.API_ID, config.API_HASH)
+client = TelegramClient('/home/botuser/test_bot/dark_bot/daerkmem_bot', config.API_ID, config.API_HASH)
 
-CHAT_ID = '-1002258778202'  # ID вашего чата
+# CHAT_ID = '-1002258778202'  # ID вашего чата
 CHANNEL_ID = bot.get_chat("@darkmemtoken").id  # ID вашего канала
 channel_name = 'darkmemtoken'
 balance = None
@@ -36,31 +37,72 @@ def create_db_connection():
         print(f"Ошибка подключения к базе данных: {e}")
         return None
 
+@bot.callback_query_handler(func=lambda call: call.data == "approval")
+def check_subscription(call):
+    user_id = call.from_user.id
+
+    try:
+        # Проверка подписки на чат
+        channel_member = bot.get_chat_member(CHANNEL_ID, user_id)
+
+        if channel_member.status in ['участник', 'member', 'administrator', 'creator']:
+            global approved
+            approved = True
+            if language == "RU":
+            # Пользователь подписан и на чат, и на канал
+                bot.send_message(call.message.chat.id, "Вы подписаны на канал. Проверка пройдена.")
+            elif language == "EN":
+                bot.send_message(call.message.chat.id, "Checking is approved")
+            is_approved(call.message)
+        else:
+            if language == "RU":
+            # Пользователь не подписан на один или оба ресурса
+                bot.send_message(call.message.chat.id, "Вы не подписаны на канал.")
+            elif language == "EN":
+                bot.send_message(call.message.chat.id, "You didn't subscribe channel")
+    except telebot.apihelper.ApiTelegramException as e:
+        print(f"Ошибка API Telegram: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data == "nft")
+def check_nft_ref(call):
+    if language == "RU":
+       bot.send_message(call.message.chat.id, "🙁На данный момент вам не хватает рефералов для получения уникальной NFT.\n\nДля получения персональной NFT вы должны пригласить 5+ рефералов через свою пригласительную ссылку.")
+    elif language == "EN":
+        bot.send_message(call.message.chat.id, "🙁At the moment you don’t have enough referrals to receive a unique NFT.\n\nTo receive a personalized NFT, you must invite 5+ referrals through your invite link.")
+
+
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
-    admin_panel(message)
+    admin_panel(message, bot)
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    callback_handler(call)
+    callback_handler(call, bot)
 
 @bot.message_handler(func=lambda message: message.text == "Добавить промокод")
 def add_promo(message):
-    add_promo_code(message)
+    add_promo_code(message, bot)
 
 @bot.message_handler(func=lambda message: message.text == "Удалить промокод")
 def delete_promo(message):
-    delete_promo_code(message)
+    delete_promo_code(message, bot)
 
+@bot.message_handler(func=lambda msg: msg.text == "Просмотр промокодов")
+def handle_view_promocodes(msg):
+    view_promocodes(msg, bot)
 # Добавление или обновление пользователя и его баллов
-def update_user_points(username, points):
+def update_user_points(username, points, referral=False):
     connection = create_db_connection()
     cursor = connection.cursor()
+    
     try:
         cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
         if cursor.fetchone() is None:
-            cursor.execute("INSERT INTO users (username, points) VALUES (%s, %s)", (username, points))
+            cursor.execute("INSERT INTO users (username, points, referrals) VALUES (%s, %s, %s)", (username, points, 0))
         else:
+            if referral:
+                # Увеличиваем количество рефералов на 1
+                cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE username = %s", (username,))
             cursor.execute("UPDATE users SET points = points + %s WHERE username = %s", (points, username))
         connection.commit()
     except Error as e:
@@ -115,7 +157,7 @@ def choose_lang(message):
 
 def subscriptions(message):
     if  not approved:
-        if message.text == "RU"
+        if message.text == "RU":
             global language
             language = "RU"
             markup = types.InlineKeyboardMarkup(row_width=2)
@@ -137,7 +179,7 @@ def subscriptions(message):
 
             bot.send_message(message.chat.id, "Subscribe to our chat and channel before using bot :)", parse_mode="html", reply_markup=markup)
     else:
-        is_approved()
+        is_approved(message)
 
 def wallet(message):
     if message.text == "Кошелек" or message.text == "Wallet":
@@ -204,25 +246,80 @@ def validate_promocode(message):
         cursor.close()
         connection.close()
 
-def generate_referral_link(user_id):
-    return f"https://t.me/ThisDarkBot?start=ref_{user_id}"
+def get_user_balance(username):
+    connection = create_db_connection()
+    cursor = None
+    balance = 0  # Инициализация баланса
 
+    try:
+        if connection is not None:
+            cursor = connection.cursor()
+            cursor.execute("SELECT points FROM users WHERE username = %s", (username,))
+            result = cursor.fetchone()  # Получаем результат запроса
+            
+            if result is not None:  # Проверяем, есть ли результат
+                balance = result[0]  # Получаем баланс
+    except Error as e:
+        print(f"Ошибка работы с базой данных: {e}")
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None and connection.is_connected():
+            connection.close()
+
+    return balance
+
+
+def generate_referral_link(user_name):
+    return f"https://t.me/ThisDarkBot?start=ref?user={user_name}"
+
+def get_user_referrals_count(username):
+    connection = create_db_connection()
+    cursor = None
+    count = 0  # Инициализация счетчика рефералов
+
+    try:
+        if connection is not None:
+            cursor = connection.cursor()
+            cursor.execute("SELECT referrals FROM users WHERE username = %s", (username,))
+            result = cursor.fetchone()  # Получаем результат запроса
+            
+            if result is not None:  # Проверяем, есть ли результат
+                count = result[0]  # Получаем количество рефералов
+    except Error as e:
+        print(f"Ошибка работы с базой данных: {e}")
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None and connection.is_connected():
+            connection.close()
+
+    return count
 def enter_refferal(message):
-    user_id = message.from_user.id
-    referral_link = generate_referral_link(user_id)
-    
     if message.text == "Реф." or message.text == "REF":
-        refferals = get_user_referrals_count(user_id)  # Получение количества рефералов из БД
+        user_id = message.from_user.id
+        username = message.from_user.username  # Получаем имя пользователя
+        balance = get_user_balance(username)  # Получаем баланс пользователя
+        refferals_count = get_user_referrals_count(username)  # Получаем количество рефералов
+
+        # Генерируем реферальную ссылку
+        referral_link = generate_referral_link(username)
+
+        # Увеличиваем количество рефералов на 1 для реферера
+        # update_user_points(username, 0, referral=True)
+
         if language == "RU":
             markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
             back = types.KeyboardButton("Назад")
+    
             markup.add(back)
-            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption=f"Ваш баланс: DARK {balance}\n\n1 реф. = 20 $DARK\n\nПригласить больше друзей 👇🏼\n\n🎖 У вас рефералов: {refferals} чел.\n\n🛎 Ваша ссылка: {referral_link}", parse_mode="html", reply_markup=markup)
+            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption=f"Ваш баланс: DARK {balance}\n\n1 реф. = 20 $DARK\n\nПригласить больше друзей 👇🏼\n\n🎖 У вас рефералов: {refferals_count} чел.\n\n🛎 Ваша ссылка: {referral_link}", parse_mode="html", reply_markup=markup)
         elif language == "EN":
             markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
             back = types.KeyboardButton("Back")
+    
             markup.add(back)
-            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption=f"Your balance: DARK {balance}\n\n1 ref. = 20 $DARK\n\nInvite more friends \n\n🎖 Your referrals: {refferals} people.\n\n🛎 Your link: {referral_link}", parse_mode="html", reply_markup=markup)
+            bot.send_photo(message.chat.id, open('images/dark_wallet.jpg', 'rb'), caption=f"Your balance: DARK {balance}\n\n1 ref. = 20 $DARK\n\nInvite more friends 👇🏼\n\n🎖 Your referrals: {refferals_count} people.\n\n🛎 Your referrer: {referral_link}", parse_mode="html", reply_markup=markup)
 
 def add_points_to_referrer(referrer_id, points):
     connection = create_db_connection()
@@ -251,20 +348,50 @@ def update_referral_count(referrer_id):
 
 @bot.message_handler(commands=['start'])
 def welcome(message):
+    user_id = message.from_user.id
+    username = message.from_user.username  # Получаем имя пользователя
     if not approved:
-        user_id = message.from_user.id
         if message.text.startswith('/start ref_'):
-            referrer_id = int(message.text.split('_')[1])
+            referrer_username = message.text.split('_')[1]  # Получаем имя реферала
+            
+            # Подключаемся к базе данных и получаем ID реферала
+            connection = create_db_connection()
+            if connection is None:
+                bot.send_message(message.chat.id, "Ошибка подключения к базе данных.")
+                return
+            
+            cursor = connection.cursor()
+            cursor.execute("SELECT id, has_referral FROM users WHERE username = %s", (referrer_username,))
+            result = cursor.fetchone()  # Получаем результат запроса
+            
+            if result:
+                referrer_id, has_referral = result  # Получаем ID и статус реферала
+                
+                # Проверка, использовал ли пользователь реферальную ссылку ранее
+                if not has_referral:
+                    # Добавление баллов за приглашенного реферала
+                    if referrer_id != user_id:  # Проверка, что реферал не сам пользователь
+                        add_points_to_referrer(referrer_id, 20)  # Функция добавления 20 баллов рефереру
 
-            # Добавление баллов за приглашенного реферала
-            if referrer_id != user_id:
-                add_points_to_referrer(referrer_id, 4)  # Функция добавления 4 баллов рефереру
+                        # Обновление данных о рефералах
+                        update_referral_count(referrer_id)  # Увеличение счётчика рефералов для реферера
+                        # update_user_points(username, 0, referral=True)
 
-                # Обновление данных о рефералах
-                update_referral_count(referrer_id)  # Увеличение счётчика рефералов для реферера
-
-                # Уведомление реферера о новом приглашенном
-                bot.send_message(referrer_id, "Ваш реферал успешно зарегистрировался! Вам начислено 4 балла.")
+                        # Уведомление реферера о новом приглашенном
+                        bot.send_message(referrer_id, "Ваш реферал успешно зарегистрировался! Вам начислено 20 баллов.")
+                        
+                        # Обновление статуса реферала
+                        cursor.execute("UPDATE users SET has_referral = 1 WHERE username = %s", (username,))
+                        connection.commit()
+                    else:
+                        bot.send_message(message.chat.id, "Вы не можете использовать свою собственную реферальную ссылку.")
+                else:
+                    bot.send_message(message.chat.id, "Вы уже использовали реферальную ссылку.")
+            else:
+                bot.send_message(message.chat.id, "Реферальный пользователь не найден.")
+            
+            cursor.close()
+            connection.close()
         choose_lang(message)
     else:
         is_approved(message)
@@ -282,39 +409,6 @@ def answer(message):
         if message.text == "Назад" or message.text == "Back":
             is_approved(message)
 
-@bot.callback_query_handler(func=lambda call: call.data == "approval")
-def check_subscription(call):
-    user_id = call.from_user.id
-
-    try:
-        # Проверка подписки на чат
-        chat_member = bot.get_chat_member(CHAT_ID, user_id)
-        channel_member = bot.get_chat_member(CHANNEL_ID, user_id)
-
-        if chat_member.status in ['участник', 'member', 'administrator', 'creator'] and channel_member.status in ['участник', 'member', 'administrator', 'creator']:
-            global approved
-            approved = True
-            if language == "RU":
-            # Пользователь подписан и на чат, и на канал
-                bot.send_message(call.message.chat.id, "Вы подписаны на оба ресурса. Проверка пройдена.")
-            elif language == "EN":
-                bot.send_message(call.message.chat.id, "Checking is approved")
-        else:
-            if language == "RU":
-            # Пользователь не подписан на один или оба ресурса
-                bot.send_message(call.message.chat.id, "Вы не подписаны на чат или канал.")
-            elif language == "EN":
-                bot.send_message(call.message.chat.id, "You didn't subscribe chat or channel")
-        # is_approved(call.message)
-    except telebot.apihelper.ApiTelegramException as e:
-        print(f"Ошибка API Telegram: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data == "nft")
-def check_nft_ref(call):
-    if language == "RU":
-       bot.send_message(call.message.chat.id, "🙁На данный момент вам не хватает рефералов для получения уникальной NFT.\n\nДля получения персональной NFT вы должны пригласить 5+ рефералов через свою пригласительную ссылку.")
-    elif language == "EN":
-        bot.send_message(call.message.chat.id, "🙁At the moment you don’t have enough referrals to receive a unique NFT.\n\nTo receive a personalized NFT, you must invite 5+ referrals through your invite link.")
 
 
 # Обработчик событий добавления реакции
